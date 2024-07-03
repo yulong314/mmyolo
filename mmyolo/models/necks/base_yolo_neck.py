@@ -55,7 +55,9 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
                                       | bottom_up |--->|  out  |---> output2
                                       |  layer1   |    | layer2|
                                       +-----------+    +-------+
-    ------------------------------------------------------------------------
+
+    .. code:: text
+
      P6 neck model structure diagram
                         +--------+                     +-------+
                         |top_down|----------+--------->|  out  |---> output0
@@ -109,6 +111,7 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
                                       | bottom_up |--->|  out  |---> output3
                                       |  layer2   |    | layer3|
                                       +-----------+    +-------+
+
     Args:
         in_channels (List[int]): Number of input channels per scale.
         out_channels (int): Number of output channels (used at each scale)
@@ -144,9 +147,8 @@ class BaseYOLONeck(BaseModule, metaclass=ABCMeta):
         self.out_channels = out_channels
         self.deepen_factor = deepen_factor
         self.widen_factor = widen_factor
-        self.freeze_all = freeze_all
         self.upsample_feats_cat_first = upsample_feats_cat_first
-
+        self.freeze_all = freeze_all
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
 

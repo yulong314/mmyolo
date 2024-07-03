@@ -5,12 +5,14 @@ import os
 import os.path as osp
 from PyQt5 import QtWidgets, QtCore, QtGui
 a=QtWidgets.QApplication([])
+
+from mmdet.utils import setup_cache_size_limit_of_dynamo
 from mmengine.config import Config, DictAction
 from mmengine.logging import print_log
 from mmengine.runner import Runner
 
 from mmyolo.registry import RUNNERS
-from mmyolo.utils import register_all_modules
+from mmyolo.utils import is_metainfo_lower
 
 
 def parse_args():
@@ -24,8 +26,12 @@ def parse_args():
         help='enable automatic-mixed-precision training')
     parser.add_argument(
         '--resume',
-        action='store_true',
-        help='resume from the latest checkpoint in the work_dir automatically')
+        nargs='?',
+        type=str,
+        const='auto',
+        help='If specify checkpoint path, resume from it, while if not '
+        'specify, try to auto resume from the latest checkpoint '
+        'in the work directory.')
     parser.add_argument(
         '--cfg-options',
         nargs='+',
@@ -41,7 +47,10 @@ def parse_args():
         choices=['none', 'pytorch', 'slurm', 'mpi'],
         default='none',
         help='job launcher')
-    parser.add_argument('--local_rank', type=int, default=0)
+    # When using PyTorch version >= 2.0.0, the `torch.distributed.launch`
+    # will pass the `--local-rank` parameter to `tools/train.py` instead
+    # of `--local_rank`.
+    parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
     args = parser.parse_args()
     if 'LOCAL_RANK' not in os.environ:
         os.environ['LOCAL_RANK'] = str(args.local_rank)
@@ -52,9 +61,9 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # register all modules in mmdet into the registries
-    # do not init the default scope here because it will be init in the runner
-    register_all_modules(init_default_scope=False)
+    # Reduce the number of repeated compilations and improve
+    # training speed.
+    setup_cache_size_limit_of_dynamo()
 
     # load config
     cfg = Config.fromfile(args.config)
@@ -87,8 +96,17 @@ def main():
                 f'`OptimWrapper` but got {optim_wrapper}.')
             cfg.optim_wrapper.type = 'AmpOptimWrapper'
             cfg.optim_wrapper.loss_scale = 'dynamic'
-    if args.resume:
-        cfg.resume = args.resume
+
+    # resume is determined in this priority: resume from > auto_resume
+    if args.resume == 'auto':
+        cfg.resume = True
+        cfg.load_from = None
+    elif args.resume is not None:
+        cfg.resume = True
+        cfg.load_from = args.resume
+
+    # Determine whether the custom metainfo fields are all lowercase
+    is_metainfo_lower(cfg)
 
     # build the runner from config
     if 'runner_type' not in cfg:

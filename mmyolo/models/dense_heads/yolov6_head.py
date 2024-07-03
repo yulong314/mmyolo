@@ -1,5 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from typing import Sequence, Tuple, Union
+from typing import List, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -14,7 +14,7 @@ from mmengine.structures import InstanceData
 from torch import Tensor
 
 from mmyolo.registry import MODELS, TASK_UTILS
-from ..utils import make_divisible
+from ..utils import gt_instances_preprocess
 from .yolov5_head import YOLOv5Head
 
 
@@ -30,8 +30,8 @@ class YOLOv6HeadModule(BaseModule):
         in_channels (Union[int, Sequence]): Number of channels in the input
             feature map.
         widen_factor (float): Width multiplier, multiply number of
-            channels in each layer by this amount. Default: 1.0.
-        num_base_priors:int: The number of priors (points) at a point
+            channels in each layer by this amount. Defaults to 1.0.
+        num_base_priors: (int): The number of priors (points) at a point
             on the feature grid.
         featmap_strides (Sequence[int]): Downsample factor of each feature map.
              Defaults to [8, 16, 32].
@@ -50,6 +50,7 @@ class YOLOv6HeadModule(BaseModule):
                  in_channels: Union[int, Sequence],
                  widen_factor: float = 1.0,
                  num_base_priors: int = 1,
+                 reg_max=0,
                  featmap_strides: Sequence[int] = (8, 16, 32),
                  norm_cfg: ConfigType = dict(
                      type='BN', momentum=0.03, eps=0.001),
@@ -61,16 +62,15 @@ class YOLOv6HeadModule(BaseModule):
         self.featmap_strides = featmap_strides
         self.num_levels = len(self.featmap_strides)
         self.num_base_priors = num_base_priors
+        self.reg_max = reg_max
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
 
         if isinstance(in_channels, int):
-            self.in_channels = [make_divisible(in_channels, widen_factor)
+            self.in_channels = [int(in_channels * widen_factor)
                                 ] * self.num_levels
         else:
-            self.in_channels = [
-                make_divisible(i, widen_factor) for i in in_channels
-            ]
+            self.in_channels = [int(i * widen_factor) for i in in_channels]
 
         self._init_layers()
 
@@ -82,6 +82,12 @@ class YOLOv6HeadModule(BaseModule):
         self.cls_preds = nn.ModuleList()
         self.reg_preds = nn.ModuleList()
         self.stems = nn.ModuleList()
+
+        if self.reg_max > 1:
+            proj = torch.arange(
+                self.reg_max + self.num_base_priors, dtype=torch.float)
+            self.register_buffer('proj', proj, persistent=False)
+
         for i in range(self.num_levels):
             self.stems.append(
                 ConvModule(
@@ -118,7 +124,7 @@ class YOLOv6HeadModule(BaseModule):
             self.reg_preds.append(
                 nn.Conv2d(
                     in_channels=self.in_channels[i],
-                    out_channels=self.num_base_priors * 4,
+                    out_channels=(self.num_base_priors + self.reg_max) * 4,
                     kernel_size=1))
 
     def init_weights(self):
@@ -132,7 +138,7 @@ class YOLOv6HeadModule(BaseModule):
             conv.bias.data.fill_(1.0)
             conv.weight.data.fill_(0.)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tuple[Tensor]) -> Tuple[List]:
         """Forward features from the upstream network.
 
         Args:
@@ -146,11 +152,11 @@ class YOLOv6HeadModule(BaseModule):
         return multi_apply(self.forward_single, x, self.stems, self.cls_convs,
                            self.cls_preds, self.reg_convs, self.reg_preds)
 
-    def forward_single(self, x: Tensor, stem: nn.ModuleList,
-                       cls_conv: nn.ModuleList, cls_pred: nn.ModuleList,
-                       reg_conv: nn.ModuleList,
-                       reg_pred: nn.ModuleList) -> Tuple[Tensor, Tensor]:
+    def forward_single(self, x: Tensor, stem: nn.Module, cls_conv: nn.Module,
+                       cls_pred: nn.Module, reg_conv: nn.Module,
+                       reg_pred: nn.Module) -> Tuple[Tensor, Tensor]:
         """Forward feature of a single scale level."""
+        b, _, h, w = x.shape
         y = stem(x)
         cls_x = y
         reg_x = y
@@ -158,23 +164,38 @@ class YOLOv6HeadModule(BaseModule):
         reg_feat = reg_conv(reg_x)
 
         cls_score = cls_pred(cls_feat)
-        bbox_pred = reg_pred(reg_feat)
+        bbox_dist_preds = reg_pred(reg_feat)
 
-        return cls_score, bbox_pred
+        if self.reg_max > 1:
+            bbox_dist_preds = bbox_dist_preds.reshape(
+                [-1, 4, self.reg_max + self.num_base_priors,
+                 h * w]).permute(0, 3, 1, 2)
+
+            # TODO: The get_flops script cannot handle the situation of
+            #  matmul, and needs to be fixed later
+            # bbox_preds = bbox_dist_preds.softmax(3).matmul(self.proj)
+            bbox_preds = bbox_dist_preds.softmax(3).matmul(
+                self.proj.view([-1, 1])).squeeze(-1)
+            bbox_preds = bbox_preds.transpose(1, 2).reshape(b, -1, h, w)
+        else:
+            bbox_preds = bbox_dist_preds
+
+        if self.training:
+            return cls_score, bbox_preds, bbox_dist_preds
+        else:
+            return cls_score, bbox_preds
 
 
-# Training mode is currently not supported
 @MODELS.register_module()
 class YOLOv6Head(YOLOv5Head):
     """YOLOv6Head head used in `YOLOv6 <https://arxiv.org/pdf/2209.02976>`_.
 
     Args:
-        head_module(nn.Module): Base module used for YOLOv6Head
+        head_module(ConfigType): Base module used for YOLOv6Head
         prior_generator(dict): Points generator feature maps
             in 2D points-based detectors.
         loss_cls (:obj:`ConfigDict` or dict): Config of classification loss.
         loss_bbox (:obj:`ConfigDict` or dict): Config of localization loss.
-        loss_obj (:obj:`ConfigDict` or dict): Config of objectness loss.
         train_cfg (:obj:`ConfigDict` or dict, optional): Training config of
             anchor head. Defaults to None.
         test_cfg (:obj:`ConfigDict` or dict, optional): Testing config of
@@ -185,7 +206,7 @@ class YOLOv6Head(YOLOv5Head):
     """
 
     def __init__(self,
-                 head_module: nn.Module,
+                 head_module: ConfigType,
                  prior_generator: ConfigType = dict(
                      type='mmdet.MlvlPointGenerator',
                      offset=0.5,
@@ -206,11 +227,6 @@ class YOLOv6Head(YOLOv5Head):
                      reduction='mean',
                      loss_weight=2.5,
                      return_iou=False),
-                 loss_obj: ConfigType = dict(
-                     type='mmdet.CrossEntropyLoss',
-                     use_sigmoid=True,
-                     reduction='sum',
-                     loss_weight=1.0),
                  train_cfg: OptConfigType = None,
                  test_cfg: OptConfigType = None,
                  init_cfg: OptMultiConfig = None):
@@ -220,13 +236,11 @@ class YOLOv6Head(YOLOv5Head):
             bbox_coder=bbox_coder,
             loss_cls=loss_cls,
             loss_bbox=loss_bbox,
-            loss_obj=loss_obj,
             train_cfg=train_cfg,
             test_cfg=test_cfg,
             init_cfg=init_cfg)
-
-        self.loss_bbox = MODELS.build(loss_bbox)
-        self.loss_cls = MODELS.build(loss_cls)
+        # yolov6 doesn't need loss_obj
+        self.loss_obj = None
 
     def special_init(self):
         """Since YOLO series algorithms will inherit from YOLOv5Head, but
@@ -241,16 +255,16 @@ class YOLOv6Head(YOLOv5Head):
             self.assigner = TASK_UTILS.build(self.train_cfg.assigner)
 
             # Add common attributes to reduce calculation
-            self.featmap_sizes = None
-            self.mlvl_priors = None
+            self.featmap_sizes_train = None
             self.num_level_priors = None
-            self.flatten_priors = None
+            self.flatten_priors_train = None
             self.stride_tensor = None
 
     def loss_by_feat(
             self,
             cls_scores: Sequence[Tensor],
             bbox_preds: Sequence[Tensor],
+            bbox_dist_preds: Sequence[Tensor],
             batch_gt_instances: Sequence[InstanceData],
             batch_img_metas: Sequence[dict],
             batch_gt_instances_ignore: OptInstanceList = None) -> dict:
@@ -289,21 +303,22 @@ class YOLOv6Head(YOLOv5Head):
             cls_score.shape[2:] for cls_score in cls_scores
         ]
         # If the shape does not equal, generate new one
-        if current_featmap_sizes != self.featmap_sizes:
-            self.featmap_sizes = current_featmap_sizes
+        if current_featmap_sizes != self.featmap_sizes_train:
+            self.featmap_sizes_train = current_featmap_sizes
 
-            self.mlvl_priors = self.prior_generator.grid_priors(
-                self.featmap_sizes,
+            mlvl_priors_with_stride = self.prior_generator.grid_priors(
+                self.featmap_sizes_train,
                 dtype=cls_scores[0].dtype,
                 device=cls_scores[0].device,
                 with_stride=True)
 
-            self.num_level_priors = [len(n) for n in self.mlvl_priors]
-            self.flatten_priors = torch.cat(self.mlvl_priors, dim=0)
-            self.stride_tensor = self.flatten_priors[..., [2]]
+            self.num_level_priors = [len(n) for n in mlvl_priors_with_stride]
+            self.flatten_priors_train = torch.cat(
+                mlvl_priors_with_stride, dim=0)
+            self.stride_tensor = self.flatten_priors_train[..., [2]]
 
         # gt info
-        gt_info = self.gt_instances_preprocess(batch_gt_instances, num_imgs)
+        gt_info = gt_instances_preprocess(batch_gt_instances, num_imgs)
         gt_labels = gt_info[:, :, :1]
         gt_bboxes = gt_info[:, :, 1:]  # xyxy
         pad_bbox_flag = (gt_bboxes.sum(-1, keepdim=True) > 0).float()
@@ -323,19 +338,20 @@ class YOLOv6Head(YOLOv5Head):
         flatten_cls_preds = torch.cat(flatten_cls_preds, dim=1)
         flatten_pred_bboxes = torch.cat(flatten_pred_bboxes, dim=1)
         flatten_pred_bboxes = self.bbox_coder.decode(
-            self.flatten_priors[..., :2], flatten_pred_bboxes,
-            self.flatten_priors[..., 2])
+            self.flatten_priors_train[..., :2], flatten_pred_bboxes,
+            self.stride_tensor[:, 0])
         pred_scores = torch.sigmoid(flatten_cls_preds)
 
         if current_epoch < self.initial_epoch:
             assigned_result = self.initial_assigner(
-                flatten_pred_bboxes.detach(), self.flatten_priors,
+                flatten_pred_bboxes.detach(), self.flatten_priors_train,
                 self.num_level_priors, gt_labels, gt_bboxes, pad_bbox_flag)
         else:
             assigned_result = self.assigner(flatten_pred_bboxes.detach(),
                                             pred_scores.detach(),
-                                            self.flatten_priors, gt_labels,
-                                            gt_bboxes, pad_bbox_flag)
+                                            self.flatten_priors_train,
+                                            gt_labels, gt_bboxes,
+                                            pad_bbox_flag)
 
         assigned_bboxes = assigned_result['assigned_bboxes']
         assigned_scores = assigned_result['assigned_scores']
@@ -378,46 +394,3 @@ class YOLOv6Head(YOLOv5Head):
         _, world_size = get_dist_info()
         return dict(
             loss_cls=loss_cls * world_size, loss_bbox=loss_bbox * world_size)
-
-    @staticmethod
-    def gt_instances_preprocess(batch_gt_instances: Tensor,
-                                batch_size: int) -> Tensor:
-        """Split batch_gt_instances with batch size, from [all_gt_bboxes, 6]
-        to.
-
-        [batch_size, number_gt, 5]. If some shape of single batch smaller than
-        gt bbox len, then using [-1., 0., 0., 0., 0.] to fill.
-
-        Args:
-            batch_gt_instances (Sequence[Tensor]): Ground truth
-                instances for whole batch, shape [all_gt_bboxes, 6]
-            batch_size (int): Batch size.
-
-        Returns:
-            Tensor: batch gt instances data, shape [batch_size, number_gt, 5]
-        """
-
-        # sqlit batch gt instance [all_gt_bboxes, 6] ->
-        # [batch_size, number_gt_each_batch, 5]
-        batch_instance_list = []
-        max_gt_bbox_len = 0
-        for i in range(batch_size):
-            single_batch_instance = \
-                batch_gt_instances[batch_gt_instances[:, 0] == i, :]
-            single_batch_instance = single_batch_instance[:, 1:]
-            batch_instance_list.append(single_batch_instance)
-            if len(single_batch_instance) > max_gt_bbox_len:
-                max_gt_bbox_len = len(single_batch_instance)
-
-        # fill [-1., 0., 0., 0., 0.] if some shape of
-        # single batch not equal max_gt_bbox_len
-        for index, gt_instance in enumerate(batch_instance_list):
-            if gt_instance.shape[0] >= max_gt_bbox_len:
-                continue
-            fill_tensor = batch_gt_instances.new_full(
-                [max_gt_bbox_len - gt_instance.shape[0], 5], 0)
-            fill_tensor[:, 0] = -1.
-            batch_instance_list[index] = torch.cat(
-                (batch_instance_list[index], fill_tensor), dim=0)
-
-        return torch.stack(batch_instance_list)

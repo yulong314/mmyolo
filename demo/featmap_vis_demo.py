@@ -6,14 +6,13 @@ from typing import Sequence
 import mmcv
 from mmdet.apis import inference_detector, init_detector
 from mmengine import Config, DictAction
+from mmengine.registry import init_default_scope
 from mmengine.utils import ProgressBar
 
 from mmyolo.registry import VISUALIZERS
-from mmyolo.utils import register_all_modules
 from mmyolo.utils.misc import auto_arrange_images, get_file_list
 
 
-# TODO: Refine
 def parse_args():
     parser = argparse.ArgumentParser(description='Visualize feature map')
     parser.add_argument(
@@ -97,12 +96,11 @@ class ActivationsWrapper:
 def main():
     args = parse_args()
 
-    # register all modules in mmdet into the registries
-    register_all_modules()
-
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+
+    init_default_scope(cfg.get('default_scope', 'mmyolo'))
 
     channel_reduction = args.channel_reduction
     if channel_reduction == 'None':
@@ -190,8 +188,9 @@ def main():
         if args.show:
             visualizer.show(shown_imgs)
 
-    print(f'All done!'
-          f'\nResults have been saved at {os.path.abspath(args.out_dir)}')
+    if not args.show:
+        print(f'All done!'
+              f'\nResults have been saved at {os.path.abspath(args.out_dir)}')
 
 
 # Please refer to the usage tutorial:
