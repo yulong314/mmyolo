@@ -2,7 +2,8 @@
 import argparse
 import os
 import os.path as osp
-
+from PyQt5 import QtWidgets, QtCore, QtGui
+a=QtWidgets.QApplication([])
 from mmdet.engine.hooks.utils import trigger_visualization_hook
 from mmengine.config import Config, DictAction
 from mmengine.evaluator import DumpResults

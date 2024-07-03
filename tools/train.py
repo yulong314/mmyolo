@@ -3,7 +3,8 @@ import argparse
 import logging
 import os
 import os.path as osp
-
+from PyQt5 import QtWidgets, QtCore, QtGui
+a=QtWidgets.QApplication([])
 from mmengine.config import Config, DictAction
 from mmengine.logging import print_log
 from mmengine.runner import Runner

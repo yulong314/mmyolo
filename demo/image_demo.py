@@ -1,7 +1,8 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import os
 from argparse import ArgumentParser
-
+from PyQt5 import QtWidgets, QtCore, QtGui
+a=QtWidgets.QApplication([])
 import mmcv
 from mmdet.apis import inference_detector, init_detector
 from mmengine.logging import print_log

@@ -1,12 +1,13 @@
-_base_ = '../_base_/default_runtime.py'
+_base_ = 'default_runtime.py'
 
 # dataset settings
-data_root = 'data/coco/'
+# data_root = 'data/coco/'
 dataset_type = 'YOLOv5CocoDataset'
-
+data_mode = 'topdown'
+data_root ='{{ fileDirname }}/../..'
 # parameters that often need to be modified
-num_classes = 80
-img_scale = (640, 640)  # height, width
+num_classes = 1
+img_scale = (256, 256)  # height, width
 deepen_factor = 0.33
 widen_factor = 0.5
 max_epochs = 300
@@ -156,8 +157,8 @@ train_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='annotations/instances_train2017.json',
-        data_prefix=dict(img='train2017/'),
+        ann_file='train.json',
+        data_prefix=dict(img='./'),
         filter_cfg=dict(filter_empty_gt=False, min_size=32),
         pipeline=train_pipeline))
 
@@ -187,8 +188,8 @@ val_dataloader = dict(
         type=dataset_type,
         data_root=data_root,
         test_mode=True,
-        data_prefix=dict(img='val2017/'),
-        ann_file='annotations/instances_val2017.json',
+        data_prefix=dict(img='./'),
+        ann_file='val.json',
         pipeline=test_pipeline,
         batch_shapes_cfg=batch_shapes_cfg))
 
@@ -231,7 +232,7 @@ custom_hooks = [
 val_evaluator = dict(
     type='mmdet.CocoMetric',
     proposal_nums=(100, 1, 10),
-    ann_file=data_root + 'annotations/instances_val2017.json',
+    ann_file=data_root + 'val.json',
     metric='bbox')
 test_evaluator = val_evaluator
 

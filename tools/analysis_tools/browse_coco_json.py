@@ -1,6 +1,7 @@
 import argparse
 import os.path as osp
-
+from PyQt5 import QtWidgets, QtCore, QtGui
+a=QtWidgets.QApplication([])
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np

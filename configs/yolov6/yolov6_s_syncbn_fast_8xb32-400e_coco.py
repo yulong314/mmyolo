@@ -1,7 +1,7 @@
 _base_ = '../_base_/default_runtime.py'
 
 # dataset settings
-data_root = 'data/coco/'
+data_root = '/2t/data/datasets/coco/'
 dataset_type = 'YOLOv5CocoDataset'
 
 num_last_epochs = 15
@@ -9,10 +9,10 @@ max_epochs = 400
 num_classes = 80
 
 # parameters that often need to be modified
-img_scale = (640, 640)  # height, width
+img_scale = (256, 256)  # height, width
 deepen_factor = 0.33
 widen_factor = 0.5
-save_epoch_intervals = 10
+save_epoch_intervals = 1
 train_batch_size_per_gpu = 32
 train_num_workers = 8
 val_batch_size_per_gpu = 1
@@ -110,7 +110,7 @@ train_pipeline = [
         pre_transform=pre_transform),
     dict(
         type='YOLOv5RandomAffine',
-        max_rotate_degree=0.0,
+        max_rotate_degree=90.0,
         max_translate_ratio=0.1,
         scaling_ratio_range=(0.5, 1.5),
         border=(-img_scale[0] // 2, -img_scale[1] // 2),
@@ -134,7 +134,7 @@ train_pipeline_stage2 = [
         pad_val=dict(img=114)),
     dict(
         type='YOLOv5RandomAffine',
-        max_rotate_degree=0.0,
+        max_rotate_degree=90.0,
         max_translate_ratio=0.1,
         scaling_ratio_range=(0.5, 1.5),
         max_shear_degree=0.0,
